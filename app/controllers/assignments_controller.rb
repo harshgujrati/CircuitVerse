@@ -2,22 +2,18 @@
 
 class AssignmentsController < ApplicationController
   include ActionView::Helpers::SanitizeHelper
+  include SanitizeDescription
+  include OrganizationScopedRedirect
 
   before_action :authenticate_user!
-  before_action :set_assignment, only: %i[show edit update destroy start reopen]
   before_action :set_group
-  before_action :check_access, only: %i[edit update destroy reopen]
+  before_action :set_assignment, only: %i[show edit update destroy start reopen close]
+  before_action :check_access, only: %i[edit update destroy reopen close]
   before_action :sanitize_assignment_description, only: %i[show edit]
   after_action :check_reopening_status, only: [:update]
   after_action :allow_iframe_lti, only: %i[show], constraints: lambda {
     Flipper.enabled?(:lms_integration, current_user)
   }
-
-  # GET /assignments
-  # GET /assignments.json
-  def index
-    @assignments = Assignment.all
-  end
 
   # GET /assignments/1
   # GET /assignments/1.json
@@ -41,8 +37,8 @@ class AssignmentsController < ApplicationController
   def new
     @assignment = Assignment.new
     @assignment.group_id = params[:group_id]
-    @assignment.deadline = Time.zone.now + 1.week
-    authorize @assignment, :admin_access?
+    @assignment.deadline = 1.week.from_now
+    authorize @assignment, :mentor_access?
   end
 
   # GET /assignments/1/edit
@@ -53,10 +49,20 @@ class AssignmentsController < ApplicationController
   def reopen
     authorize @assignment
     @assignment.status = "open"
-    @assignment.deadline = Time.zone.now + 1.day
+    @assignment.deadline = 1.day.from_now
     @assignment.save
 
-    redirect_to edit_group_assignment_path(@group, @assignment)
+    redirect_to edit_group_assignment_redirect_path(@group, @assignment)
+  end
+
+  # Close assignment
+  def close
+    authorize @assignment
+    @assignment.status = "closed"
+    @assignment.deadline = Time.zone.now
+    @assignment.save
+
+    redirect_to group_assignment_redirect_path(@group, @assignment)
   end
 
   # POST /assignments
@@ -73,11 +79,11 @@ class AssignmentsController < ApplicationController
     # params[:deadline] = params[:deadline].to_time
 
     @assignment = @group.assignments.new(params)
-    authorize @assignment, :admin_access?
+    authorize @assignment, :mentor_access?
 
     @assignment.description = description
     @assignment.status = "open"
-    @assignment.deadline = Time.zone.now + 1.year if @assignment.deadline.nil?
+    @assignment.deadline = 1.year.from_now if @assignment.deadline.nil?
 
     if Flipper.enabled?(:lms_integration, current_user)
       @assignment.lti_consumer_key = lti_consumer_key
@@ -86,11 +92,11 @@ class AssignmentsController < ApplicationController
 
     respond_to do |format|
       if @assignment.save
-        format.html { redirect_to @group, notice: "Assignment was successfully created." }
+        format.html { redirect_to group_redirect_path(@group), notice: "Assignment was successfully created." }
         format.json { render :show, status: :created, location: @assignment }
       else
         format.html { render :new }
-        format.json { render json: @assignment.errors, status: :unprocessable_entity }
+        format.json { render json: @assignment.errors, status: :unprocessable_content }
       end
     end
   end
@@ -116,11 +122,11 @@ class AssignmentsController < ApplicationController
 
     respond_to do |format|
       if @assignment.update(params)
-        format.html { redirect_to @group, notice: "Assignment was successfully updated." }
+        format.html { redirect_to group_redirect_path(@group), notice: "Assignment was successfully updated." }
         format.json { render :show, status: :ok }
       else
         format.html { render :edit }
-        format.json { render json: @assignment.errors, status: :unprocessable_entity }
+        format.json { render json: @assignment.errors, status: :unprocessable_content }
       end
     end
   end
@@ -130,7 +136,7 @@ class AssignmentsController < ApplicationController
   def destroy
     @assignment.destroy
     respond_to do |format|
-      format.html { redirect_to @group, notice: "Assignment was successfully deleted." }
+      format.html { redirect_to group_redirect_path(@group), notice: "Assignment was successfully deleted." }
       format.json { head :no_content }
     end
   end
@@ -145,11 +151,16 @@ class AssignmentsController < ApplicationController
 
     # Use callbacks to share common setup or constraints between actions.
     def set_assignment
-      @assignment = Assignment.find(params[:id])
+      @assignment = @group.assignments.find(params.expect(:id))
     end
 
     def set_group
-      @group = Group.find(params[:group_id])
+      @group =
+        if params[:organization_id].present?
+          Organization.friendly.find(params.expect(:organization_id)).groups.find(params.expect(:group_id))
+        else
+          Group.find(params.expect(:group_id))
+        end
     end
 
     def check_reopening_status
@@ -158,24 +169,20 @@ class AssignmentsController < ApplicationController
 
     # Never trust parameters from the scary internet, only allow the white list through.
     def assignment_create_params
-      params.require(:assignment).permit(:name, :deadline, :description, :grading_scale,
-                                         :restrictions)
+      params.expect(assignment: %i[name deadline description grading_scale
+                                   restrictions feature_restrictions])
     end
 
     def assignment_update_params
-      params.require(:assignment).permit(:name, :deadline, :description,
-                                         :restrictions)
+      params.expect(assignment: %i[name deadline description
+                                   restrictions feature_restrictions])
     end
 
     def check_access
-      authorize @assignment, :admin_access?
+      authorize @assignment, :mentor_access?
     end
 
     def sanitize_assignment_description
-      @assignment.description = sanitize(
-        @assignment.description,
-        tags: %w[img p strong em a sup sub del u span h1 h2 h3 h4 hr li ol ul blockquot],
-        attributes: %w[style src href alt title target]
-      )
+      @assignment.description = sanitize_description(@assignment.description)
     end
 end

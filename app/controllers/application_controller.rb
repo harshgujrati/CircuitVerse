@@ -1,18 +1,24 @@
 # frozen_string_literal: true
 
 class ApplicationController < ActionController::Base
-  include Pundit
+  include Pundit::Authorization
+  include SearchHelper
+
   protect_from_forgery with: :exception
 
   before_action :store_user_location!, if: :storable_location?
+  before_action :set_notifications, if: :current_user
+  before_action :prepare_search_data
   around_action :switch_locale
+
+  after_action :verify_authorized, unless: :skip_authorization_verification?
 
   rescue_from Pundit::NotAuthorizedError, with: :auth_error
   rescue_from ApplicationPolicy::CustomAuthException, with: :custom_auth_error
   rescue_from ActiveRecord::RecordNotFound, with: :not_found
 
   def auth_error
-    render plain: "You are not authorized to do the requested operation"
+    render plain: "You are not authorized to do the requested operation", status: :forbidden
   end
 
   def custom_auth_error(exception)
@@ -20,25 +26,44 @@ class ApplicationController < ActionController::Base
   end
 
   def not_found
-    render "errors/not_found.html.erb", status: :not_found
+    render "errors/not_found", status: :not_found
   end
 
-  def switch_locale(&action)
+  def switch_locale(&)
     logger.debug "* Accept-Language: #{request.env['HTTP_ACCEPT_LANGUAGE']}"
-    locale = current_user&.locale || extract_locale_from_accept_language_header || I18n.default_locale
+    locale = params.permit(:locale)[:locale]&.to_sym || current_user&.locale&.to_sym ||
+             extract_locale_from_accept_language_header
+    locale = I18n.default_locale unless I18n.available_locales.include?(locale)
     logger.debug "* Locale set to '#{locale}'"
-    begin
-      I18n.with_locale(locale, &action)
-    rescue I18n::InvalidLocale
-      locale = I18n.default_locale
-      retry
+    I18n.with_locale(locale, &)
+  end
+
+  # Overrides Devise::Controller::StoreLocation.store_location_for to check if
+  # URL is too long to store in the session
+  def store_location_for(resource_or_scope, location)
+    max_location_size = 200 # bytes
+    if location && location.length > max_location_size
+      super(resource_or_scope, "/")
+    else
+      super
     end
   end
 
   private
 
+    # Engine controllers and Devise inherit from ApplicationController but
+    # manage their own access control.
+    def skip_authorization_verification?
+      devise_controller?
+    end
+
     def extract_locale_from_accept_language_header
       request.env["HTTP_ACCEPT_LANGUAGE"]&.scan(/^[a-z]{2}/)&.first
+    end
+
+    def set_notifications
+      @unread = NoticedNotification.where(recipient: current_user).unread
+      @notification = NoticedNotification.where(recipient: current_user).newest_first.limit(5)
     end
 
     def storable_location?
@@ -51,5 +76,14 @@ class ApplicationController < ActionController::Base
 
     def after_sign_in_path_for(resource_or_scope)
       stored_location_for(resource_or_scope) || super
+    end
+
+    def prepare_search_data
+      @search_countries = countries_for_search_filters(request)
+      @current_filters = {
+        "country" => params[:country],
+        "institute" => params[:institute],
+        "tag" => params[:tag]
+      }
     end
 end

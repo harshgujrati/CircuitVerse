@@ -6,12 +6,12 @@ describe AssignmentPolicy do
   subject { described_class.new(user, assignment) }
 
   before do
-    @mentor = FactoryBot.create(:user)
-    @group = FactoryBot.create(:group, mentor: @mentor)
+    @primary_mentor = FactoryBot.create(:user)
+    @group = FactoryBot.create(:group, primary_mentor: @primary_mentor)
   end
 
-  context "user is mentor" do
-    let(:user) { @mentor }
+  context "user is primary_mentor" do
+    let(:user) { @primary_mentor }
     let(:assignment) { FactoryBot.create(:assignment, group: @group) }
 
     it { is_expected.to permit(:admin_access) }
@@ -19,7 +19,7 @@ describe AssignmentPolicy do
     context "assignment is graded and past deadline" do
       let(:assignment) do
         FactoryBot.create(:assignment,
-                          group: @group, grading_scale: :letter, deadline: Time.zone.now - 1.day)
+                          group: @group, grading_scale: :letter, deadline: 1.day.ago)
       end
 
       it { is_expected.to permit(:can_be_graded) }
@@ -28,7 +28,7 @@ describe AssignmentPolicy do
     context "assignment is ungraded" do
       let(:assignment) do
         FactoryBot.create(:assignment, group: @group,
-                                       deadline: Time.zone.now - 1.day, grading_scale: :no_scale)
+                                       deadline: 1.day.ago, grading_scale: :no_scale)
       end
 
       it { is_expected.not_to permit(:can_be_graded) }
@@ -37,7 +37,90 @@ describe AssignmentPolicy do
     context "assignment is graded but deadline has not passed" do
       let(:assignment) do
         FactoryBot.create(:assignment, group: @group,
-                                       deadline: Time.zone.now + 1.day, grading_scale: :letter)
+                                       deadline: 1.day.from_now, grading_scale: :letter)
+      end
+
+      it { is_expected.not_to permit(:can_be_graded) }
+    end
+
+    context "assignment is closed" do
+      let(:assignment) { FactoryBot.create(:assignment, group: @group, status: "closed") }
+
+      it { is_expected.to permit(:reopen) }
+    end
+
+    context "assignment is already open" do
+      let(:assignment) { FactoryBot.create(:assignment, group: @group, status: "open") }
+
+      it "raises CustomAuthException on reopen" do
+        expect { subject.reopen? }.to raise_error(ApplicationPolicy::CustomAuthException)
+      end
+    end
+
+    context "assignment is open" do
+      let(:assignment) { FactoryBot.create(:assignment, group: @group, status: "open") }
+
+      it { is_expected.to permit(:edit) }
+      it { is_expected.not_to permit(:start) }
+    end
+  end
+
+  context "user is an admin who is not part of the group" do
+    let(:user) { FactoryBot.create(:user, admin: true) }
+    let(:assignment) { FactoryBot.create(:assignment, group: @group) }
+
+    it { is_expected.to permit(:admin_access) }
+    it { is_expected.to permit(:mentor_access) }
+    it { is_expected.to permit(:edit) }
+    it { is_expected.not_to permit(:start) }
+  end
+
+  context "user is not part of the group" do
+    let(:user) { FactoryBot.create(:user) }
+    let(:assignment) do
+      FactoryBot.create(:assignment, group: @group, status: "open",
+                                     grading_scale: :letter, deadline: 1.day.ago)
+    end
+
+    it { is_expected.not_to permit(:edit) }
+    it { is_expected.not_to permit(:start) }
+    it { is_expected.not_to permit(:show_grades) }
+  end
+
+  context "user is a mentor" do
+    let(:user) { @mentor }
+    let(:assignment) { FactoryBot.create(:assignment, group: @group) }
+
+    before do
+      @mentor = FactoryBot.create(:user)
+      FactoryBot.create(:group_member, group: @group, user: @mentor, mentor: true)
+    end
+
+    it { is_expected.not_to permit(:admin_access) }
+    it { is_expected.to permit(:mentor_access) }
+
+    context "assignment is graded and past deadline" do
+      let(:assignment) do
+        FactoryBot.create(:assignment,
+                          group: @group, grading_scale: :letter, deadline: 1.day.ago)
+      end
+
+      it { is_expected.to permit(:can_be_graded) }
+    end
+
+    context "assignment is ungraded" do
+      let(:assignment) do
+        FactoryBot.create(:assignment, group: @group,
+                                       deadline: 1.day.ago, grading_scale: :no_scale)
+      end
+
+      it { is_expected.not_to permit(:can_be_graded) }
+    end
+
+    context "assignment is graded but deadline has not passed" do
+      let(:assignment) do
+        FactoryBot.create(:assignment, group: @group,
+                                       deadline: 1.day.from_now, grading_scale: :letter)
       end
 
       it { is_expected.not_to permit(:can_be_graded) }
@@ -46,16 +129,20 @@ describe AssignmentPolicy do
 
   context "user is a group member" do
     let(:user) { @member }
+    let(:assignment) { FactoryBot.create(:assignment, group: @group) }
 
     before do
       @member = FactoryBot.create(:user)
       FactoryBot.create(:group_member, group: @group, user: @member)
     end
 
+    it { is_expected.not_to permit(:admin_access) }
+    it { is_expected.not_to permit(:mentor_access) }
+
     context "assignment is graded and past deadline" do
       let(:assignment) do
         FactoryBot.create(:assignment,
-                          group: @group, grading_scale: :letter, deadline: Time.zone.now - 1.day)
+                          group: @group, grading_scale: :letter, deadline: 1.day.ago)
       end
 
       it { is_expected.not_to permit(:can_be_graded) }
@@ -65,7 +152,7 @@ describe AssignmentPolicy do
       let(:assignment) { FactoryBot.create(:assignment, group: @group, status: "open") }
 
       it { is_expected.not_to permit(:admin_access) }
-      it { is_expected.to permit(:edit) }
+      it { is_expected.not_to permit(:edit) }
       it { is_expected.to permit(:start) }
 
       context "project is already submitted" do
@@ -82,6 +169,44 @@ describe AssignmentPolicy do
 
       it { is_expected.not_to permit(:start) }
       it { is_expected.not_to permit(:edit) }
+    end
+  end
+
+  context "for an organization-owned group's assignment" do
+    let(:organization) { FactoryBot.create(:organization) }
+    let(:assignment) { FactoryBot.create(:assignment, group: org_group) }
+
+    context "user is an org admin" do
+      let(:user) { FactoryBot.create(:user) }
+      let(:org_group) { FactoryBot.create(:group, organization: organization, primary_mentor: @primary_mentor) }
+
+      before { FactoryBot.create(:organization_member, organization: organization, user: user, role: :admin) }
+
+      it { is_expected.to permit(:admin_access) }
+      it { is_expected.to permit(:show) }
+      it { is_expected.to permit(:mentor_access) }
+    end
+
+    context "user is an assigned org mentor" do
+      let(:user) { FactoryBot.create(:user) }
+      let(:org_group) { FactoryBot.create(:group, organization: organization, primary_mentor: @primary_mentor) }
+
+      before do
+        FactoryBot.create(:organization_member, organization: organization, user: user, role: :mentor)
+        FactoryBot.create(:group_member, group: org_group, user: user, mentor: true)
+      end
+
+      it { is_expected.to permit(:admin_access) }
+    end
+
+    context "user is an unrelated org member" do
+      let(:user) { FactoryBot.create(:user) }
+      let(:org_group) { FactoryBot.create(:group, organization: organization, primary_mentor: @primary_mentor) }
+
+      before { FactoryBot.create(:organization_member, organization: organization, user: user, role: :member) }
+
+      it { is_expected.not_to permit(:admin_access) }
+      it { is_expected.not_to permit(:mentor_access) }
     end
   end
 end

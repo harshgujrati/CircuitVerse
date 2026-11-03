@@ -4,12 +4,15 @@ class SimulatorController < ApplicationController
   include SimulatorHelper
   include ActionView::Helpers::SanitizeHelper
 
-  before_action :authenticate_user!, only: %i[create update edit update_image]
+  skip_after_action :verify_authorized, only: %i[new create post_issue verilog_cv]
+
+  before_action :authenticate_user!, only: %i[create update edit]
   before_action :set_project, only: %i[show embed get_data]
-  before_action :set_user_project, only: %i[update edit update_image]
+  before_action :set_user_project, only: %i[update edit]
   before_action :check_view_access, only: %i[show embed get_data]
-  before_action :check_edit_access, only: %i[edit update update_image]
-  skip_before_action :verify_authenticity_token, only: %i[get_data create]
+  before_action :check_edit_access, only: %i[edit update]
+  before_action :redirect_to_canonical_url, only: %i[show edit]
+  skip_before_action :verify_authenticity_token, only: %i[get_data create update verilog_cv]
   after_action :allow_iframe, only: %i[embed]
   after_action :allow_iframe_lti, only: %i[show], constraints: lambda {
     Flipper.enabled?(:lms_integration, current_user)
@@ -22,54 +25,48 @@ class SimulatorController < ApplicationController
   def show
     @logix_project_id = params[:id]
     @external_embed = false
-    render "embed"
-  end
-
-  def edit
-    @logix_project_id = params[:id]
-    @projectName = @project.name
-  end
-
-  def embed
-    authorize @project
-    @logix_project_id = params[:id]
-    @project = Project.friendly.find(params[:id])
-    @author = @project.author_id
-    @external_embed = true
-    render "embed"
-  end
-
-  def get_data
-    render json: ProjectDatum.find_by(project: @project)&.data
+    if Flipper.enabled?(:vuesim, current_user)
+      render "embed_vue", layout: false
+    else
+      render "embed"
+    end
   end
 
   def new
     @logix_project_id = 0
     @projectName = ""
-    render "edit"
+    if Flipper.enabled?(:vuesim, current_user)
+      render "edit_vue", layout: false
+    else
+      render "edit"
+    end
   end
 
-  def update
-    @project.build_project_datum unless ProjectDatum.exists?(project_id: @project.id)
-    @project.project_datum.data = sanitize_data(@project, params[:data])
-
-    image_file = return_image_file(params[:image])
-
-    @project.image_preview = image_file
-    @project.name = sanitize(params[:name])
-    @project.save
-    @project.project_datum.save
-    image_file.close
-
-    File.delete(image_file) if check_to_delete(params[:image])
-
-    render plain: "success"
+  def edit
+    @logix_project_id = params[:id]
+    @projectName = @project.name
+    if Flipper.enabled?(:vuesim, current_user)
+      render :edit_vue, layout: false
+    else
+      render :edit
+    end
   end
 
-  def post_issue
-    url = ENV["SLACK_ISSUE_HOOK_URL"]
-    HTTP.post(url, json: { text: params[:text] })
-    head :ok, content_type: "text/html"
+  def embed
+    authorize @project
+    @logix_project_id = params[:id]
+    @project = Project.friendly.find(params.expect(:id))
+    @author = @project.author_id
+    @external_embed = true
+    if Flipper.enabled?(:vuesim, current_user)
+      render :embed_vue, layout: false
+    else
+      render :embed
+    end
+  end
+
+  def get_data
+    render json: ProjectDatum.find_by(project: @project)&.data
   end
 
   def create
@@ -77,24 +74,70 @@ class SimulatorController < ApplicationController
     @project.build_project_datum.data = sanitize_data(@project, params[:data])
     @project.name = sanitize(params[:name])
     @project.author = current_user
-
+    # ActiveStorage
+    io_image_file = parse_image_data_url(params[:image])
+    attach_circuit_preview(io_image_file)
+    # CarrierWave
     image_file = return_image_file(params[:image])
-
     @project.image_preview = image_file
-    @project.save!
     image_file.close
-
-    File.delete(image_file) if check_to_delete(params[:image])
+    @project.save!
 
     # render plain: simulator_path(@project)
     # render plain: user_project_url(current_user,@project)
     redirect_to edit_user_project_url(current_user, @project)
   end
 
+  def update
+    @project.build_project_datum unless ProjectDatum.exists?(project_id: @project.id)
+    @project.project_datum.data = sanitize_data(@project, params[:data])
+    # ActiveStorage
+    @project.circuit_preview.purge if @project.circuit_preview.attached?
+    io_image_file = parse_image_data_url(params[:image])
+    attach_circuit_preview(io_image_file)
+    # CarrierWave
+    image_file = return_image_file(params[:image])
+    @project.image_preview = image_file
+    image_file.close
+    File.delete(image_file) if check_to_delete(params[:image])
+    @project.name = sanitize(params[:name])
+    @project.save
+    @project.project_datum.save
+    render plain: "success"
+  end
+
+  def view_issue_circuit_data
+    issue_circuit_data = IssueCircuitDatum.find(params.expect(:id))
+    authorize issue_circuit_data, :admin?, policy_class: IssueCircuitDatumPolicy
+    render plain: issue_circuit_data.data
+  end
+
+  def post_issue
+    url = ENV.fetch("SLACK_ISSUE_HOOK_URL", nil)
+
+    # Post the issue circuit data
+    issue_circuit_data = IssueCircuitDatum.new
+    issue_circuit_data.data = params[:circuit_data]
+    issue_circuit_data.save!
+
+    issue_circuit_data_id = issue_circuit_data.id
+
+    # Send it over to slack hook
+    circuit_data_url = "#{request.base_url}/simulator/issue_circuit_data/#{issue_circuit_data_id}"
+    text = "#{params[:text]}\nCircuit Data: #{circuit_data_url}"
+    HTTP.post(url, json: { text: text }) if Flipper.enabled?(:slack_issue_notification)
+    head :ok, content_type: "text/html"
+  end
+
+  MAX_CODE_SIZE = 10_000 # 10KB limit
+
   def verilog_cv
-    url = "http://127.0.0.1:3040/getJSON"
-    response = HTTP.post(url, json: { "code": params[:code] })
-    render json: response.to_s, status: response.code
+    if params[:code].to_s.bytesize > MAX_CODE_SIZE
+      render json: { message: "Code too large (max #{MAX_CODE_SIZE} bytes)" }, status: :content_too_large
+      return
+    end
+
+    compile_with_local_gem
   end
 
   def allow_iframe_lti
@@ -105,17 +148,44 @@ class SimulatorController < ApplicationController
 
   private
 
+    def redirect_to_canonical_url
+      canonical_path = case action_name
+                       when "show" then simulator_user_project_path(@project.author_id, @project)
+                       when "edit" then simulator_edit_user_project_path(@project.author_id, @project)
+                       when "embed" then simulator_embed_user_project_path(@project.author_id, @project)
+      end
+      return if canonical_path.nil? || request.path == canonical_path
+
+      redirect_to "#{canonical_path}#{"?#{request.query_string}" if request.query_string.present?}",
+                  status: :moved_permanently
+    end
+
     def allow_iframe
       response.headers.except! "X-Frame-Options"
     end
 
-    def set_project
-      @project = Project.friendly.find(params[:id])
+    def compile_with_local_gem
+      code = params[:code].to_s
+      result = Yosys2Digitaljs::Runner.compile(code)
+      render json: result
+    rescue Yosys2Digitaljs::SyntaxError => e
+      render json: { message: "Syntax Error: #{e.message}" }, status: :unprocessable_content
+    rescue Yosys2Digitaljs::Runner::TimeoutError => e
+      render json: { message: e.message }, status: :service_unavailable
+    rescue Yosys2Digitaljs::Error => e
+      render json: { message: e.message }, status: :unprocessable_content
+    rescue StandardError => e
+      Rails.logger.error("[Yosys Compilation Error] #{e.class}: #{e.message}\n#{e.backtrace&.first(5)&.join("\n")}")
+      render json: { message: "Compilation failed" }, status: :internal_server_error
     end
 
-    # FIXME: remove this logic after fixing production data
+    def set_project
+      @project = Project.friendly.find(params.expect(:id))
+    end
+
     def set_user_project
-      @project = current_user.projects.friendly.find_by(id: params[:id]) || Project.friendly.find(params[:id])
+      @project = Project.friendly.find(params.expect(:id))
+      authorize @project, :edit_access?
     end
 
     def check_edit_access
@@ -124,5 +194,15 @@ class SimulatorController < ApplicationController
 
     def check_view_access
       authorize @project, :view_access?
+    end
+
+    def attach_circuit_preview(image_file)
+      return unless image_file
+
+      @project.circuit_preview.attach(
+        io: image_file,
+        filename: "preview_#{Time.zone.now.to_f.to_s.sub('.', '')}.jpeg",
+        content_type: "img/jpeg"
+      )
     end
 end

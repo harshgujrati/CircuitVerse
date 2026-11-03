@@ -7,28 +7,16 @@ describe ProjectsController, type: :request do
     @author = FactoryBot.create(:user)
   end
 
-  describe "#get_projects" do
-    before do
-      @tag = FactoryBot.create(:tag)
-      @projects = [FactoryBot.create(:project, author: @author),
-                   FactoryBot.create(:project, author: @author)]
-      @projects.each { |project| FactoryBot.create(:tagging, project: project, tag: @tag) }
-    end
-
-    it "gets project with mentioned tags" do
-      get tag_path(@tag.name)
-      @projects.each do |project|
-        expect(response.body).to include(project.name)
-      end
-    end
-  end
-
   describe "#show" do
     context "project is public" do
       before do
         @project = FactoryBot.create(:project, author: @author, project_access_type: "Public")
         @visit = FactoryBot.create(:ahoy_visit)
-        allow_any_instance_of(Ahoy::Controller).to receive(:current_visit).and_return(@visit)
+        allow(described_class).to receive(:new).and_wrap_original do |m, *args, **kwargs|
+          controller = m.call(*args, **kwargs)
+          allow(controller).to receive(:current_visit).and_return(@visit)
+          controller
+        end
       end
 
       context "new visit" do
@@ -51,7 +39,7 @@ describe ProjectsController, type: :request do
           expect do
             get user_project_path(@author, @project)
             @project.reload
-          end.to change { @project.view }.by(0)
+          end.not_to(change { @project.view })
         end
       end
     end
@@ -72,14 +60,34 @@ describe ProjectsController, type: :request do
   describe "#change_stars" do
     before do
       @user = sign_in_random_user
-      @project = FactoryBot.create(:project, author: @author)
+      @project = FactoryBot.create(:project, author: @author, project_access_type: "Public")
+    end
+
+    context "project is private and user has no view access" do
+      before do
+        @private_project = FactoryBot.create(:project, author: @author, project_access_type: "Private")
+      end
+
+      it "does not create a star" do
+        expect do
+          post change_stars_path(@private_project), xhr: true
+        end.not_to change(Star, :count)
+        check_project_access_error(response)
+      end
     end
 
     context "user has not already starred" do
       it "creates a star" do
         expect do
-          get change_stars_path(@project), xhr: true
+          post change_stars_path(@project), xhr: true
         end.to change(Star, :count).by(1)
+      end
+    end
+
+    context "star notification" do
+      it "notify author" do
+        post change_stars_path(@project), xhr: true
+        expect(@author.noticed_notifications.count).to eq(1)
       end
     end
 
@@ -90,7 +98,7 @@ describe ProjectsController, type: :request do
 
       it "deletes the star" do
         expect do
-          get change_stars_path(@project), xhr: true
+          post change_stars_path(@project), xhr: true
         end.to change(Star, :count).by(-1)
       end
     end
@@ -108,13 +116,20 @@ describe ProjectsController, type: :request do
           post create_fork_project_path(@project)
           @user.reload
         end.to change { @user.projects.count }.by(1)
-        expect(@user.projects.order("created_at").last.forked_project_id).to eq(@project.id)
+        expect(@user.projects.order(:created_at).last.forked_project_id).to eq(@project.id)
+      end
+    end
+
+    context "fork notification" do
+      it "notify author" do
+        post change_stars_path(@project), xhr: true
+        expect(@author.noticed_notifications.count).to eq(1)
       end
     end
 
     context "project is an assignment" do
       before do
-        group = FactoryBot.create(:group, mentor: FactoryBot.create(:user))
+        group = FactoryBot.create(:group, primary_mentor: FactoryBot.create(:user))
         assignment = FactoryBot.create(:assignment, group: group)
         @assignment_project = FactoryBot.create(:project, author: @author, assignment: assignment)
       end
@@ -144,7 +159,7 @@ describe ProjectsController, type: :request do
           post "/users/#{@user.id}/projects", params: create_params
         end.to change(Project, :count).by(1)
 
-        project = Project.all.order("created_at").last
+        project = Project.order(:created_at).last
         expect(project.name).to eq("Test Project")
         expect(project.project_access_type).to eq("Public")
       end

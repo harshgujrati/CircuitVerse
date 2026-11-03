@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 class PushSubscriptionController < ApplicationController
+  skip_after_action :verify_authorized
+
   before_action :authenticate_user!, only: %i[create test]
   skip_before_action :verify_authenticity_token, only: %i[create test]
 
@@ -12,7 +14,7 @@ class PushSubscriptionController < ApplicationController
         status: "ok"
       }, status: :created
     else
-      render json: @subscription.errors, status: :unprocessable_entity
+      render json: @subscription.errors, status: :unprocessable_content
     end
   end
 
@@ -24,10 +26,10 @@ class PushSubscriptionController < ApplicationController
   private
 
     def push_subscription_params
-      params.require(:push_subscription).permit(:endpoint, :auth, :p256dh)
+      params.expect(push_subscription: %i[endpoint auth p256dh])
     end
 
     def push_test_params
-      params.require(:push).permit(:message)
+      params.expect(push: [:message])
     end
 end

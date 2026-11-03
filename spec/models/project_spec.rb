@@ -5,7 +5,7 @@ require "rails_helper"
 RSpec.describe Project, type: :model do
   before do
     @user = FactoryBot.create(:user)
-    group = FactoryBot.create(:group, mentor: @user)
+    group = FactoryBot.create(:group, primary_mentor: @user)
     @assignment = FactoryBot.create(:assignment, group: group)
   end
 
@@ -18,18 +18,21 @@ RSpec.describe Project, type: :model do
     it { is_expected.to have_many(:collaborations) }
     it { is_expected.to have_many(:collaborators) }
     it { is_expected.to have_one(:featured_circuit) }
+    it { is_expected.to have_many(:noticed_notifications) }
+    it { is_expected.to have_one(:contest_winner) }
+    it { is_expected.to have_many(:submissions) }
   end
 
   describe "validity" do
     it "doesn't validate with public access type" do
-      project = FactoryBot.build(:project, assignment: @assignment, author: @user)
+      project = FactoryBot.create(:project, assignment: @assignment, author: @user)
       expect(project).to be_valid
       project.project_access_type = "Public"
       expect(project).to be_invalid
     end
 
     it "doesn't allow profanities in description" do
-      project = FactoryBot.build(:project, assignment: @assignment, author: @user)
+      project = FactoryBot.create(:project, assignment: @assignment, author: @user)
       expect(project).to be_valid
       project.description = "Ass"
       expect(project).to be_invalid
@@ -77,7 +80,7 @@ RSpec.describe Project, type: :model do
 
     describe "#increase_views" do
       before do
-        @project = FactoryBot.build(:project, assignment: @assignment, author: @user)
+        @project = FactoryBot.create(:project, assignment: @assignment, author: @user)
         @viewer = FactoryBot.create(:user)
       end
 

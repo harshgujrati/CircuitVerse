@@ -7,7 +7,7 @@ RSpec.describe Api::V1::ThreadsController, "#subscribe", type: :request do
 
     context "when not authenticated" do
       before do
-        put "/api/v1/threads/#{project.commontator_thread.id}/subscribe", as: :json
+        put "/api/v1/threads/#{project.comment_thread.id}/subscribe", as: :json
       end
 
       it "returns status unauthorized" do
@@ -18,10 +18,10 @@ RSpec.describe Api::V1::ThreadsController, "#subscribe", type: :request do
 
     context "when authenticated but thread is already subscribed" do
       before do
-        project.commontator_thread.subscribe(user)
+        project.comment_thread.subscribe(user)
         token = get_auth_token(user)
-        put "/api/v1/threads/#{project.commontator_thread.id}/subscribe",
-            headers: { "Authorization": "Token #{token}" }, as: :json
+        put "/api/v1/threads/#{project.comment_thread.id}/subscribe",
+            headers: { Authorization: "Token #{token}" }, as: :json
       end
 
       it "returns status conflict & 'thread already subscribed' error" do
@@ -33,8 +33,8 @@ RSpec.describe Api::V1::ThreadsController, "#subscribe", type: :request do
     context "when authenticated & thread is not already subscribed" do
       before do
         token = get_auth_token(user)
-        put "/api/v1/threads/#{project.commontator_thread.id}/subscribe",
-            headers: { "Authorization": "Token #{token}" }, as: :json
+        put "/api/v1/threads/#{project.comment_thread.id}/subscribe",
+            headers: { Authorization: "Token #{token}" }, as: :json
       end
 
       it "returns status success & 'thread subscribed' message" do

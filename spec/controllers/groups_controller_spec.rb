@@ -4,31 +4,39 @@ require "rails_helper"
 
 describe GroupsController, type: :request do
   before do
-    @mentor = FactoryBot.create(:user)
+    @primary_mentor = FactoryBot.create(:user)
     @user = FactoryBot.create(:user)
-    @group = FactoryBot.create(:group, name: "test group", mentor: @mentor)
+    @group = FactoryBot.create(:group, name: "test group", primary_mentor: @primary_mentor)
   end
 
   describe "#create" do
     it "creates a group" do
-      sign_in @mentor
+      sign_in @primary_mentor
       expect do
-        post groups_path, params: { group: { name: "test group", mentor_id: @mentor.id } }
+        post groups_path, params: { group: { name: "test group", primary_mentor_id: @primary_mentor.id } }
       end.to change(Group, :count).by(1)
     end
   end
 
   describe "#destroy" do
-    context "mentor is signed_in" do
+    context "when primary_mentor is signed_in" do
       it "destroys group" do
-        sign_in @mentor
+        sign_in @primary_mentor
         expect do
           delete group_path(@group)
         end.to change(Group, :count).by(-1)
       end
     end
 
-    context "user other than mentor is signed in" do
+    context "when a group mentor is signed in" do
+      it "throws not authorized error" do
+        sign_in_group_mentor(@group)
+        delete group_path(@group)
+        check_not_authorized(response)
+      end
+    end
+
+    context "when a user other than primary_mentor is signed in" do
       it "throws not authorized error" do
         sign_in_random_user
         delete group_path(@group)
@@ -38,10 +46,10 @@ describe GroupsController, type: :request do
   end
 
   describe "#show" do
-    context "group member is signed in", :focus do
+    context "group member is signed in" do
       before do
         @assignment = FactoryBot.create(:assignment, group: @group,
-                                                     status: "reopening", deadline: Time.zone.now - 2.days)
+                                                     status: "reopening", deadline: 2.days.ago)
         sign_in get_group_member(@group)
       end
 
@@ -52,7 +60,7 @@ describe GroupsController, type: :request do
       end
     end
 
-    context "random user is signed in" do
+    context "when a random user is signed in" do
       it "throws not authorized error" do
         sign_in_random_user
         get group_path(@group)
@@ -62,16 +70,24 @@ describe GroupsController, type: :request do
   end
 
   describe "#update" do
-    context "mentor is signed in" do
+    context "when primary_mentor is signed in" do
       it "updates group" do
-        sign_in @mentor
+        sign_in @primary_mentor
         put group_path(@group), params: { group: { name: "updated group" } }
         @group.reload
         expect(@group.name).to eq("updated group")
       end
     end
 
-    context "another user is signed in" do
+    context "when a mentor is signed in" do
+      it "updates group" do
+        sign_in_group_mentor(@group)
+        put group_path(@group), params: { group: { name: "updated group" } }
+        check_not_authorized(response)
+      end
+    end
+
+    context "when another user is signed in" do
       it "throws not authorized error" do
         sign_in_random_user
         put group_path(@group), params: { group: { name: "updated group" } }
@@ -83,7 +99,7 @@ describe GroupsController, type: :request do
   describe "#invite" do
     before do
       @already_present = FactoryBot.create(:user)
-      @group.update(token_expires_at: Time.zone.now + 12.days)
+      @group.update(token_expires_at: 12.days.from_now)
       FactoryBot.create(:group_member, user: @already_present, group: @group)
     end
 
@@ -101,7 +117,7 @@ describe GroupsController, type: :request do
         sign_in @already_present
         expect do
           get invite_group_path(id: @group.id, token: @group.group_token)
-        end.to change(GroupMember, :count).by(0)
+        end.not_to change(GroupMember, :count)
       end
     end
 
@@ -114,7 +130,8 @@ describe GroupsController, type: :request do
         sign_in @user
         get invite_group_path(id: @group.id, token: @group.group_token)
         expect(response.status).to eq(302)
-        expect(flash[:notice]).to eq("Url is expired, request a new one from owner of the group.")
+        expect(flash[:notice])
+          .to eq("Url is expired, request a new one from the primary mentor of the group.")
       end
     end
 
@@ -127,6 +144,115 @@ describe GroupsController, type: :request do
     end
   end
 
+  describe "#invite for organization-owned groups" do
+    before do
+      @organization = FactoryBot.create(:organization)
+      @org_group = FactoryBot.create(:group, name: "org group",
+                                             primary_mentor: @primary_mentor,
+                                             organization: @organization)
+      @org_group.update(token_expires_at: 12.days.from_now)
+      Flipper.enable(:organizations)
+    end
+
+    context "when a user joins an organization-owned group" do
+      it "adds the user to the organization as a member" do
+        sign_in @user
+        expect do
+          get invite_group_path(id: @org_group.id, token: @org_group.group_token)
+        end.to change { @organization.organization_members.where(user: @user).count }.by(1)
+        expect(@organization.organization_members.find_by(user: @user).role).to eq("member")
+      end
+
+      it "does not downgrade an existing admin who joins a group" do
+        FactoryBot.create(:organization_member, organization: @organization, user: @user, role: :admin)
+        sign_in @user
+        get invite_group_path(id: @org_group.id, token: @org_group.group_token)
+        expect(@organization.organization_members.find_by(user: @user).role).to eq("admin")
+        expect(@organization.organization_members.where(user: @user).count).to eq(1)
+      end
+
+      it "does not downgrade an existing mentor who joins a group" do
+        FactoryBot.create(:organization_member, organization: @organization, user: @user, role: :mentor)
+        sign_in @user
+        get invite_group_path(id: @org_group.id, token: @org_group.group_token)
+        expect(@organization.organization_members.find_by(user: @user).role).to eq("mentor")
+        expect(@organization.organization_members.where(user: @user).count).to eq(1)
+      end
+
+      it "adds the user via the org-scoped invite URL" do
+        sign_in @user
+        expect do
+          get invite_organization_group_path(@organization, @org_group, token: @org_group.group_token)
+        end.to change { @organization.organization_members.where(user: @user).count }.by(1)
+      end
+    end
+
+    context "when a user joins a standalone group" do
+      it "does not create an organization membership" do
+        @group.update(token_expires_at: 12.days.from_now)
+        sign_in @user
+        expect do
+          get invite_group_path(id: @group.id, token: @group.group_token)
+        end.not_to change(OrganizationMember, :count)
+      end
+    end
+  end
+
+  describe "pending invitation to an organization-owned group" do
+    it "adds a new user to the organization when they accept the invitation" do
+      organization = FactoryBot.create(:organization)
+      org_group = FactoryBot.create(:group, organization: organization, primary_mentor: @primary_mentor)
+      PendingInvitation.create!(group: org_group, email: "newuser@example.com")
+      user = FactoryBot.create(:user, email: "newuser@example.com")
+      expect(organization.organization_members.find_by(user: user)&.role).to eq("member")
+      expect(GroupMember.exists?(group: org_group, user: user)).to be(true)
+    end
+  end
+
+  describe "#show org-scoped group lookup" do
+    before do
+      @organization = FactoryBot.create(:organization)
+      @org_group = FactoryBot.create(:group, name: "org group",
+                                             primary_mentor: @primary_mentor,
+                                             organization: @organization)
+      Flipper.enable(:organizations)
+    end
+
+    context "when the organization does not exist" do
+      it "redirects to the plain group path" do
+        sign_in @primary_mentor
+        get organization_group_path(organization_id: "nonexistent-org-slug", id: @org_group.id)
+        expect(response).to redirect_to(group_path(@org_group))
+      end
+    end
+
+    context "when the group does not belong to the organization" do
+      it "redirects to the plain group path" do
+        other_organization = FactoryBot.create(:organization)
+        sign_in @primary_mentor
+        get organization_group_path(other_organization, @org_group)
+        expect(response).to redirect_to(group_path(@org_group))
+      end
+    end
+
+    context "when the group does not exist at all" do
+      it "redirects to root path" do
+        sign_in @primary_mentor
+        get organization_group_path(organization_id: @organization.to_param, id: 999_999)
+        expect(response).to redirect_to(root_path)
+      end
+    end
+
+    context "when accessed via the correct organization" do
+      it "loads the group successfully" do
+        FactoryBot.create(:organization_member, organization: @organization, user: @primary_mentor, role: :admin)
+        sign_in @primary_mentor
+        get organization_group_path(@organization, @org_group)
+        expect(response).to have_http_status(:ok)
+      end
+    end
+  end
+
   describe "#generate_token" do
     before do
       @group.update(token_expires_at: 1.day.ago, group_token: nil)
@@ -134,7 +260,7 @@ describe GroupsController, type: :request do
 
     context "when group does not have any token or token is expired" do
       it "regenerates the group token" do
-        sign_in @mentor
+        sign_in @primary_mentor
         put generate_token_group_path(id: @group.id), xhr: true
         expect(response.status).to eq(200)
       end

@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 class Api::V1::UsersController < Api::V1::BaseController
+  skip_after_action :verify_authorized, only: %i[index show me]
+
   before_action :set_user, only: %i[show update]
   before_action :authenticate_user!
   before_action :check_access, only: [:update]
@@ -38,7 +40,7 @@ class Api::V1::UsersController < Api::V1::BaseController
   private
 
     def set_user
-      @user = User.find(params[:id])
+      @user = User.find(params.expect(:id))
     end
 
     def check_access
@@ -50,6 +52,7 @@ class Api::V1::UsersController < Api::V1::BaseController
     end
 
     def user_params
-      params.permit(:name, :locale, :educational_institute, :country, :subscribed)
+      params.permit(:name, :locale, :educational_institute, :country, :subscribed,
+                    :profile_picture, :remove_picture)
     end
 end

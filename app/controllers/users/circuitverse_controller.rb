@@ -1,16 +1,22 @@
 # frozen_string_literal: true
 
 class Users::CircuitverseController < ApplicationController
+  skip_after_action :verify_authorized, except: %i[groups]
+
   TYPEAHEAD_INSTITUTE_LIMIT = 50
 
   include UsersCircuitverseHelper
+  include OrganizationScopedRedirect
 
   before_action :authenticate_user!, only: %i[edit update groups]
   before_action :set_user, except: [:typeahead_educational_institute]
+  before_action :remove_previous_profile_picture, only: [:update]
 
   def index
     @profile = ProfileDecorator.new(@user)
-    @projects = @user.rated_projects
+    @projects = @user.rated_projects.with_attached_circuit_preview
+    @user_projects = @user.projects.with_attached_circuit_preview
+    @collaborated_projects = @user.collaborated_projects.with_attached_circuit_preview
   end
 
   def edit; end
@@ -35,22 +41,27 @@ class Users::CircuitverseController < ApplicationController
 
   def groups
     @user = authorize @user
-    @groups_mentored = Group.where(id: Group.joins(:mentor).where(mentor: @user))
-                            .select("groups.*, COUNT(group_members.id) as group_member_count")
-                            .joins("left outer join group_members on \
-                              (group_members.group_id = groups.id)")
-                            .group("groups.id")
+    @groups_owned = Group.where(id: Group.joins(:primary_mentor).where(primary_mentor: @user))
+                         .select("groups.*, COUNT(group_members.id) as group_member_count")
+                         .left_outer_joins(:group_members)
+                         .group("groups.id")
+                         .preload(:organization)
+    @groups_member = @user.groups.preload(:organization)
   end
 
   private
 
     def profile_params
-      params.require(:user).permit(:name, :profile_picture, :country, :educational_institute,
-                                   :subscribed, :locale)
+      params.expect(user: %i[name profile_picture country educational_institute
+                             subscribed locale remove_picture avatar vuesim])
     end
 
     def set_user
       @profile = current_user
-      @user = User.find(params[:id])
+      @user = User.find(params.expect(:id))
+    end
+
+    def remove_previous_profile_picture
+      @profile.profile_picture.purge if params[:user][:profile_picture].present? && @profile.profile_picture.attached?
     end
 end

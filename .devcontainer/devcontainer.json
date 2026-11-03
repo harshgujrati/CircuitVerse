@@ -1,0 +1,37 @@
+{
+  "name": "CircuitVerse",
+  "dockerComposeFile": "docker-compose.yml",
+  "service": "web",
+  "workspaceFolder": "/workspaces/CircuitVerse",
+  "shutdownAction": "stopCompose",
+  "hostRequirements": {
+    "cpus": 4
+  },
+  "waitFor": "onCreateCommand",
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "postStartCommand": "bash .devcontainer/boot.sh",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "dbaeumer.vscode-eslint",
+        "Shopify.ruby-lsp",
+        "KoichiSasada.vscode-rdbg"
+      ],
+      "settings": {
+        "remote.autoForwardPorts": true,
+        "rubyLsp.bundleGemfile": "Gemfile"
+      }
+    }
+  },
+  "portsAttributes": {
+    "3000": {
+      "label": "Application",
+      "onAutoForward": "notify"
+    },
+    "8025": {
+      "label": "Mailpit",
+      "onAutoForward": "silent"
+    }
+  },
+  "forwardPorts": [3000, 8025]
+}

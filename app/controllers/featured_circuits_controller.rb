@@ -1,18 +1,27 @@
 # frozen_string_literal: true
 
 class FeaturedCircuitsController < ApplicationController
+  include UsersCircuitverseHelper
+  include AdminAuthorizable
+
+  skip_after_action :verify_authorized, only: [:index]
+
   before_action :authenticate_user!, except: [:index]
-  before_action :set_and_authorize_featured, except: [:index]
+  before_action :authorize_admin, except: [:index]
+  before_action :set_featured, except: [:index]
 
   def index
-    @projects = Project.joins(:featured_circuit)
+    @projects = Project
+                .joins(:featured_circuit)
+                .includes(:author, :stars)
+                .with_attached_circuit_preview
   end
 
   def create
-    if @featured_circuit.nil? && featured_circuit_params[:featured] == "1"
-      # featured_circuit doesn't exist and checkbox is marked
-      FeaturedCircuit.create(project_id: featured_circuit_params[:project_id])
-    end
+    return unless @featured_circuit.nil? && featured_circuit_params[:featured] == "1"
+
+    # featured_circuit doesn't exist and checkbox is marked
+    FeaturedCircuit.create(project_id: featured_circuit_params[:project_id])
   end
 
   def destroy
@@ -22,12 +31,11 @@ class FeaturedCircuitsController < ApplicationController
 
   private
 
-    def set_and_authorize_featured
-      authorize FeaturedCircuit, :admin?
+    def set_featured
       @featured_circuit = FeaturedCircuit.find_by(project_id: featured_circuit_params[:project_id])
     end
 
     def featured_circuit_params
-      params.require(:featured_circuit).permit(:project_id, :featured)
+      params.expect(featured_circuit: %i[project_id featured])
     end
 end

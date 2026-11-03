@@ -1,20 +1,20 @@
+// Font files are copied into app/assets/builds by `yarn build:css`, so they
+// are served next to the compiled application.css.
+$fa-font-path: ".";
 @import "theme";
 @import "bootstrap/scss/bootstrap";
-@import 'bootstrap-tagsinput/dist/bootstrap-tagsinput.css';
-@import 'bootstrap-typeahead-rails';
-@import "font-awesome-sprockets";
-@import "font-awesome";
-@import 'trumbowyg/dist/ui/trumbowyg.min';
-@import "commontator/application";
-@import 'simple_discussion';
-@import 'simple_discussion_overrides';
+@import "@fortawesome/fontawesome-free/scss/fontawesome";
+@import "@fortawesome/fontawesome-free/scss/solid";
+@import "@fortawesome/fontawesome-free/scss/regular";
+@import "@fortawesome/fontawesome-free/scss/brands";
+@import "@fortawesome/fontawesome-free/scss/v4-shims";
+@import 'autoComplete';
 @import 'layout';
 @import 'components';
 @import 'navbar';
 @import 'footer';
 @import 'about';
 @import 'contribute';
-@import 'teacher';
 @import 'search';
 @import 'custom_mail';
 @import 'editor';
@@ -22,7 +22,11 @@
 @import 'assignments';
 @import 'examples';
 @import 'groups';
+@import 'organizations';
 @import 'projects';
 @import 'users';
-@import 'commontator';
+@import 'comments';
 @import 'announcements';
+@import 'select2_overrides';
+@import 'contests';
+@import 'rtl_layout';
